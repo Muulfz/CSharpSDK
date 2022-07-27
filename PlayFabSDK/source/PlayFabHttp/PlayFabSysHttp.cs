@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
+using AltV.Net.Client;
+using AltV.Net.Client.Elements.Data;
+using AltV.Net.Client.Elements.Interfaces;
 
 namespace PlayFab.Internal
 {
     public class PlayFabSysHttp : ITransportPlugin
     {
-        private readonly HttpClient _client = new HttpClient();
+        private readonly IHttpClient _client = Alt.CreateHttpClient();
+
 
         public async Task<object> DoPost(string fullUrl, object request, Dictionary<string, string> extraHeaders)
         {
@@ -27,55 +30,49 @@ namespace PlayFab.Internal
                 bodyString = serializer.SerializeObject(request);
             }
 
-            HttpResponseMessage httpResponse;
+            HttpResponse httpResponse;
             string httpResponseString;
-            IEnumerable<string> requestId;
+            string requestId;
             bool hasReqId = false;
-            using (var postBody = new ByteArrayContent(Encoding.UTF8.GetBytes(bodyString)))
-            {
-                postBody.Headers.Add("Content-Type", "application/json");
-                postBody.Headers.Add("X-PlayFabSDK", PlayFabSettings.SdkVersionString);
-                if (extraHeaders != null)
-                {
-                    foreach (var headerPair in extraHeaders)
-                    {
-                        // Special case for Authorization header
-                        if (headerPair.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
-                        {
-                            _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", headerPair.Value);
-                        }
-                        else
-                        {
-                            postBody.Headers.Add(headerPair.Key, headerPair.Value);
-                        }
-                    }
-                }
 
-                try
+
+            _client.SetExtraHeader("Content-Type", "application/json");
+            _client.SetExtraHeader("X-PlayFabSDK", PlayFabSettings.SdkVersionString);
+
+            if (extraHeaders != null)
+            {
+                foreach (var headerPair in extraHeaders)
                 {
-                    httpResponse = await _client.PostAsync(fullUrl, postBody);
-                    httpResponseString = await httpResponse.Content.ReadAsStringAsync();
-                    hasReqId = httpResponse.Headers.TryGetValues("X-RequestId", out requestId);
-                }
-                catch (HttpRequestException e)
-                {
-                    return new PlayFabError
+                    // Special case for Authorization header
+                    if (headerPair.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
                     {
-                        Error = PlayFabErrorCode.ConnectionError,
-                        ErrorMessage = e.InnerException.Message
-                    };
-                }
-                catch (Exception e)
-                {
-                    return new PlayFabError
+                        _client.SetExtraHeader("Authorization", $"Bearer {headerPair.Value}");
+                    }
+                    else
                     {
-                        Error = PlayFabErrorCode.ConnectionError,
-                        ErrorMessage = e.Message
-                    };
+                        _client.SetExtraHeader(headerPair.Key, headerPair.Value);
+                    }
                 }
             }
 
-            if (!httpResponse.IsSuccessStatusCode)
+            try
+            {
+                httpResponse =
+                    await _client.Post(fullUrl, bodyString);
+               
+                httpResponseString = httpResponse.Body.ToString();
+                hasReqId = httpResponse.Headers.TryGetValue("X-RequestId", out requestId);
+            }
+            catch (Exception e)
+            {
+                return new PlayFabError
+                {
+                    Error = PlayFabErrorCode.ConnectionError,
+                    ErrorMessage = e.Message
+                };
+            }
+
+            if (!(httpResponse.StatusCode >= 200 && httpResponse.StatusCode <= 299))
             {
                 var error = new PlayFabError();
 
@@ -98,7 +95,8 @@ namespace PlayFab.Internal
                     error.HttpStatus = httpResponse.StatusCode.ToString();
                     error.Error = PlayFabErrorCode.JsonParseError;
                     error.ErrorMessage = e.Message;
-                    error.RequestId = GetRequestId(hasReqId, requestId); ;
+                    error.RequestId = GetRequestId(hasReqId, requestId);
+                    ;
                     return error;
                 }
 
@@ -117,7 +115,8 @@ namespace PlayFab.Internal
                     }
                 }
 
-                error.RequestId = GetRequestId(hasReqId, requestId); ;
+                error.RequestId = GetRequestId(hasReqId, requestId);
+                ;
 
                 return error;
             }
@@ -135,14 +134,14 @@ namespace PlayFab.Internal
             return httpResponseString;
         }
 
-        private string GetRequestId(bool hasReqId, IEnumerable<string> reqIdContainer)
+        private string GetRequestId(bool hasReqId, string reqIdContainer)
         {
             const string defaultReqId = "NoRequestIdFound";
             string reqId = "";
 
             try
             {
-                reqId = hasReqId ? reqIdContainer.GetEnumerator().Current.ToString() : defaultReqId;
+                reqId = hasReqId ? reqIdContainer : defaultReqId;
             }
             catch (Exception e)
             {
